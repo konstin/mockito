@@ -144,7 +144,6 @@ impl ServerPool {
 }
 
 lazy_static! {
-    pub static ref SERVER: Mutex<Server> = Mutex::new(Server::new());
     pub static ref POOL_RC: Arc<ServerPool> = Arc::new(ServerPool::new(4));
 }
 

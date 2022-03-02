@@ -597,7 +597,6 @@ type Response = response::Response;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use regex::Regex;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::{From, Into};
 use std::fmt;
@@ -608,18 +607,6 @@ use std::ops::Drop;
 use std::path::Path;
 use std::string::ToString;
 use std::sync::Arc;
-use std::sync::{LockResult, Mutex, MutexGuard};
-
-lazy_static! {
-    // A global lock that ensure all Mockito tests are run on a single thread.
-    static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
-}
-
-thread_local!(
-    // A thread-local reference to the global lock. This is acquired within `Mock#create()`.
-    static LOCAL_TEST_MUTEX: RefCell<LockResult<MutexGuard<'static, ()>>> =
-        RefCell::new(TEST_MUTEX.lock());
-);
 
 pub use crate::server::address as server_address;
 pub use crate::server::url as server_url;
