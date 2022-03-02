@@ -1,11 +1,12 @@
 use crate::response::{Body, Chunked};
 use crate::{Mock, Request, SERVER_ADDRESS_INTERNAL};
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::io;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 impl Mock {
@@ -50,13 +51,13 @@ impl<'a> PartialEq<Request> for &'a mut Mock {
     }
 }
 
-pub struct State {
+pub struct Server {
     pub listening_addr: Option<SocketAddr>,
     pub mocks: Vec<Mock>,
     pub unmatched_requests: Vec<Request>,
 }
 
-impl State {
+impl Server {
     #[allow(clippy::missing_const_for_fn)]
     fn new() -> Self {
         Self {
@@ -65,11 +66,87 @@ impl State {
             unmatched_requests: Vec::new(),
         }
     }
+
+    pub fn try_start(&mut self) {
+        if self.listening_addr.is_some() {
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let res = TcpListener::bind("127.0.0.1:0");
+            let (listener, addr) = match res {
+                Ok(listener) => {
+                    let addr = listener.local_addr().unwrap();
+                    tx.send(Some(addr)).unwrap();
+                    (listener, addr)
+                }
+                Err(err) => {
+                    error!("{}", err);
+                    tx.send(None).unwrap();
+                    return;
+                }
+            };
+
+            debug!("Server is listening at {}", addr);
+            for stream in listener.incoming() {
+                if let Ok(stream) = stream {
+                    let request = Request::from(&stream);
+                    debug!("Request received: {}", request);
+                    if request.is_ok() {
+                        handle_request(request, stream);
+                    } else {
+                        let message = request
+                            .error()
+                            .map_or("Could not parse the request.", |err| err.as_str());
+                        debug!("Could not parse request because: {}", message);
+                        respond_with_error(stream, request.version, message);
+                    }
+                } else {
+                    debug!("Could not read from stream");
+                }
+            }
+        });
+
+        self.listening_addr = rx.recv().ok().and_then(|addr| addr);
+    }
+}
+
+pub struct ServerPool {
+    servers: Vec<Mutex<Server>>,
+}
+
+impl ServerPool {
+    fn new(size: usize) -> Self {
+        let mut servers = vec![];
+
+        for _ in 0..size {
+            let server = Server::new();
+            servers.push(Mutex::new(server));
+        }
+
+        ServerPool { servers }
+    }
+
+    fn find_server(&self) -> MutexGuard<Server> {
+        self.servers
+            .iter()
+            .find_map(|server| server.try_lock().ok())
+            .or_else(|| self.servers[0].lock().ok())
+            .unwrap()
+    }
 }
 
 lazy_static! {
-    pub static ref STATE: Mutex<State> = Mutex::new(State::new());
+    pub static ref SERVER: Mutex<Server> = Mutex::new(Server::new());
+    pub static ref POOL_RC: Arc<ServerPool> = Arc::new(ServerPool::new(4));
 }
+
+thread_local!(
+    pub static LOCAL_SERVER: RefCell<MutexGuard<'static, Server>> =
+        RefCell::new(POOL_RC.find_server());
+);
 
 /// Address and port of the local server.
 /// Can be used with `std::net::TcpStream`.
@@ -78,7 +155,7 @@ lazy_static! {
 pub fn address() -> SocketAddr {
     try_start();
 
-    let state = STATE.lock().map(|state| state.listening_addr);
+    let state = SERVER.lock().map(|state| state.listening_addr);
     state
         .expect("state lock")
         .expect("server should be listening")
@@ -92,7 +169,7 @@ pub fn url() -> String {
 }
 
 pub fn try_start() {
-    let mut state = STATE.lock().unwrap();
+    let mut state = SERVER.lock().unwrap();
 
     if state.listening_addr.is_some() {
         return;
@@ -146,7 +223,7 @@ fn handle_request(request: Request, stream: TcpStream) {
 }
 
 fn handle_match_mock(request: Request, stream: TcpStream) {
-    let mut state = STATE.lock().unwrap();
+    let mut state = SERVER.lock().unwrap();
 
     let mut matchings_mocks = state
         .mocks

@@ -664,7 +664,7 @@ pub fn mock<P: Into<Matcher>>(method: &str, path: P) -> Mock {
 pub fn reset() {
     server::try_start();
 
-    let mut state = server::STATE.lock().unwrap();
+    let mut state = server::SERVER.lock().unwrap();
     state.mocks.clear();
 }
 
@@ -1232,7 +1232,7 @@ impl Mock {
         let mut opt_message = None;
 
         {
-            let state = server::STATE.lock().unwrap();
+            let state = server::SERVER.lock().unwrap();
 
             if let Some(remote_mock) = state.mocks.iter().find(|mock| mock.id == self.id) {
                 let mut message = match (self.expected_hits_at_least, self.expected_hits_at_most) {
@@ -1283,7 +1283,7 @@ impl Mock {
     /// Returns whether the expected amount of requests (defaults to 1) were performed.
     ///
     pub fn matched(&self) -> bool {
-        let state = server::STATE.lock().unwrap();
+        let state = server::SERVER.lock().unwrap();
 
         state
             .mocks
@@ -1314,18 +1314,26 @@ impl Mock {
     ///
     #[must_use]
     pub fn create(mut self) -> Self {
-        server::try_start();
+        server::LOCAL_SERVER.with(|server| {
+            let mut server = server.borrow_mut();
+
+            server.try_start();
+
+            let mut remote_mock = self.clone();
+            remote_mock.is_remote = true;
+            server.mocks.push(remote_mock);
+        });
+        // server::try_start();
 
         // Ensures Mockito tests are run sequentially.
-        LOCAL_TEST_MUTEX.with(|_| {});
+        // LOCAL_TEST_MUTEX.with(|_| {});
 
-        let mut state = server::STATE.lock().unwrap();
+        // let mut state = server::SERVER.lock().unwrap();
+        // let mut remote_mock = self.clone();
+        // remote_mock.is_remote = true;
+        // state.mocks.push(remote_mock);
 
         self.created = true;
-
-        let mut remote_mock = self.clone();
-        remote_mock.is_remote = true;
-        state.mocks.push(remote_mock);
 
         self
     }
@@ -1339,11 +1347,19 @@ impl Mock {
 impl Drop for Mock {
     fn drop(&mut self) {
         if self.is_local() {
-            let mut state = server::STATE.lock().unwrap();
+            server::LOCAL_SERVER.with(|server| {
+                let mut server = server.borrow_mut();
 
-            if let Some(pos) = state.mocks.iter().position(|mock| mock.id == self.id) {
-                state.mocks.remove(pos);
-            }
+                if let Some(pos) = server.mocks.iter().position(|mock| mock.id == self.id) {
+                    server.mocks.remove(pos);
+                }
+            });
+
+            // let mut state = server::SERVER.lock().unwrap();
+
+            // if let Some(pos) = state.mocks.iter().position(|mock| mock.id == self.id) {
+            // state.mocks.remove(pos);
+            // }
 
             debug!("Mock::drop() called for {}", self);
 
