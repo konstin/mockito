@@ -662,15 +662,18 @@ pub fn mock<P: Into<Matcher>>(method: &str, path: P) -> Mock {
 /// Removes all the mocks stored on the server.
 ///
 pub fn reset() {
-    server::try_start();
-
-    let mut state = server::SERVER.lock().unwrap();
-    state.mocks.clear();
+    server::LOCAL_SERVER.with(|server| {
+        let mut server = server.borrow_mut();
+        server.try_start();
+        server.mocks.clear();
+    });
 }
 
 #[allow(missing_docs)]
 pub fn start() {
-    server::try_start();
+    server::LOCAL_SERVER.with(|server| {
+        server.borrow_mut().try_start();
+    });
 }
 
 ///
@@ -1232,44 +1235,48 @@ impl Mock {
         let mut opt_message = None;
 
         {
-            let state = server::SERVER.lock().unwrap();
+            server::LOCAL_SERVER.with(|server| {
+                let server = server.borrow();
 
-            if let Some(remote_mock) = state.mocks.iter().find(|mock| mock.id == self.id) {
-                let mut message = match (self.expected_hits_at_least, self.expected_hits_at_most) {
-                    (Some(min), Some(max)) if min == max => format!(
-                        "\n> Expected {} request(s) to:\n{}\n...but received {}\n\n",
-                        min, self, remote_mock.hits
-                    ),
-                    (Some(min), Some(max)) => format!(
+                if let Some(remote_mock) = server.mocks.iter().find(|mock| mock.id == self.id) {
+                    let mut message =
+                        match (self.expected_hits_at_least, self.expected_hits_at_most) {
+                            (Some(min), Some(max)) if min == max => format!(
+                                "\n> Expected {} request(s) to:\n{}\n...but received {}\n\n",
+                                min, self, remote_mock.hits
+                            ),
+                            (Some(min), Some(max)) => format!(
                         "\n> Expected between {} and {} request(s) to:\n{}\n...but received {}\n\n",
                         min, max, self, remote_mock.hits
                     ),
-                    (Some(min), None) => format!(
+                            (Some(min), None) => format!(
                         "\n> Expected at least {} request(s) to:\n{}\n...but received {}\n\n",
                         min, self, remote_mock.hits
                     ),
-                    (None, Some(max)) => format!(
+                            (None, Some(max)) => format!(
                         "\n> Expected at most {} request(s) to:\n{}\n...but received {}\n\n",
                         max, self, remote_mock.hits
                     ),
-                    (None, None) => format!(
-                        "\n> Expected 1 request(s) to:\n{}\n...but received {}\n\n",
-                        self, remote_mock.hits
-                    ),
-                };
+                            (None, None) => format!(
+                                "\n> Expected 1 request(s) to:\n{}\n...but received {}\n\n",
+                                self, remote_mock.hits
+                            ),
+                        };
 
-                if let Some(last_request) = state.unmatched_requests.last() {
-                    message.push_str(&format!(
-                        "> The last unmatched request was:\n{}\n",
-                        last_request
-                    ));
+                    if let Some(last_request) = server.unmatched_requests.last() {
+                        message.push_str(&format!(
+                            "> The last unmatched request was:\n{}\n",
+                            last_request
+                        ));
 
-                    let difference = diff::compare(&self.to_string(), &last_request.to_string());
-                    message.push_str(&format!("> Difference:\n{}\n", difference));
+                        let difference =
+                            diff::compare(&self.to_string(), &last_request.to_string());
+                        message.push_str(&format!("> Difference:\n{}\n", difference));
+                    }
+
+                    opt_message = Some(message);
                 }
-
-                opt_message = Some(message);
-            }
+            });
         }
 
         if let Some(message) = opt_message {
@@ -1283,22 +1290,23 @@ impl Mock {
     /// Returns whether the expected amount of requests (defaults to 1) were performed.
     ///
     pub fn matched(&self) -> bool {
-        let state = server::SERVER.lock().unwrap();
+        server::LOCAL_SERVER.with(|server| {
+            server
+                .borrow()
+                .mocks
+                .iter()
+                .find(|mock| mock.id == self.id)
+                .map_or(false, |remote_mock| {
+                    let hits = remote_mock.hits;
 
-        state
-            .mocks
-            .iter()
-            .find(|mock| mock.id == self.id)
-            .map_or(false, |remote_mock| {
-                let hits = remote_mock.hits;
-
-                match (self.expected_hits_at_least, self.expected_hits_at_most) {
-                    (Some(min), Some(max)) => hits >= min && hits <= max,
-                    (Some(min), None) => hits >= min,
-                    (None, Some(max)) => hits <= max,
-                    (None, None) => hits == 1,
-                }
-            })
+                    match (self.expected_hits_at_least, self.expected_hits_at_most) {
+                        (Some(min), Some(max)) => hits >= min && hits <= max,
+                        (Some(min), None) => hits >= min,
+                        (None, Some(max)) => hits <= max,
+                        (None, None) => hits == 1,
+                    }
+                })
+        })
     }
 
     ///
@@ -1323,18 +1331,8 @@ impl Mock {
             remote_mock.is_remote = true;
             server.mocks.push(remote_mock);
         });
-        // server::try_start();
-
-        // Ensures Mockito tests are run sequentially.
-        // LOCAL_TEST_MUTEX.with(|_| {});
-
-        // let mut state = server::SERVER.lock().unwrap();
-        // let mut remote_mock = self.clone();
-        // remote_mock.is_remote = true;
-        // state.mocks.push(remote_mock);
 
         self.created = true;
-
         self
     }
 
@@ -1354,12 +1352,6 @@ impl Drop for Mock {
                     server.mocks.remove(pos);
                 }
             });
-
-            // let mut state = server::SERVER.lock().unwrap();
-
-            // if let Some(pos) = state.mocks.iter().position(|mock| mock.id == self.id) {
-            // state.mocks.remove(pos);
-            // }
 
             debug!("Mock::drop() called for {}", self);
 
