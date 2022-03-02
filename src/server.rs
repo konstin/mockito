@@ -111,6 +111,11 @@ impl Server {
 
         self.listening_addr = rx.recv().ok().and_then(|addr| addr);
     }
+
+    pub fn address(&self) -> String {
+        self.listening_addr
+            .map_or("no server".to_string(), |addr| addr.to_string())
+    }
 }
 
 pub struct ServerPool {
@@ -170,7 +175,8 @@ pub fn url() -> String {
 fn handle_request(request: Request, stream: TcpStream) {
     LOCAL_SERVER.with(|server| {
         let mut server = server.borrow_mut();
-        debug!("[{:?}] Matching request", server.listening_addr);
+        let address = server.address();
+        debug!("[{}] Matching request", address);
 
         let mut matchings_mocks = server
             .mocks
@@ -186,11 +192,11 @@ fn handle_request(request: Request, stream: TcpStream) {
         };
 
         if let Some(mock) = mock {
-            debug!("Mock found");
+            debug!("[{}] Mock found", address);
             mock.hits += 1;
             respond_with_mock(stream, request.version, mock, request.is_head());
         } else {
-            debug!("Mock not found");
+            debug!("[{}] Mock not found", address);
             respond_with_mock_not_found(stream, request.version);
             server.unmatched_requests.push(request);
         }

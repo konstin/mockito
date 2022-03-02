@@ -1316,6 +1316,7 @@ impl Mock {
             let mut remote_mock = self.clone();
             remote_mock.is_remote = true;
             server.mocks.push(remote_mock);
+            debug!("[{}] Mock created", server.address());
         });
 
         self.created = true;

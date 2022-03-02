@@ -14,6 +14,14 @@ use std::thread;
 
 type Binary = Vec<u8>;
 
+#[allow(dead_code)]
+fn debug() {
+    let _ = env_logger::builder()
+        .is_test(true)
+        .filter_level(log::LevelFilter::Debug)
+        .try_init();
+}
+
 fn request_stream<StrOrBytes: AsRef<[u8]>>(
     version: &str,
     route: &str,
@@ -133,7 +141,7 @@ fn test_create_starts_the_server() {
 
 #[test]
 fn test_simple_route_mock() {
-    let _ = env_logger::try_init();
+    debug();
     let _m = mock("GET", "/hello").with_body("world").create();
 
     let (status_line, _, body) = request("GET /hello", "");
