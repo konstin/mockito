@@ -621,20 +621,6 @@ thread_local!(
         RefCell::new(TEST_MUTEX.lock());
 );
 
-///
-/// Points to the address the mock server is running at.
-/// Can be used with `std::net::TcpStream`.
-///
-#[deprecated(note = "Call server_address() instead")]
-pub const SERVER_ADDRESS: &str = SERVER_ADDRESS_INTERNAL;
-const SERVER_ADDRESS_INTERNAL: &str = "127.0.0.1:1234";
-
-///
-/// Points to the URL the mock server is running at.
-///
-#[deprecated(note = "Call server_url() instead")]
-pub const SERVER_URL: &str = "http://127.0.0.1:1234";
-
 pub use crate::server::address as server_address;
 pub use crate::server::url as server_url;
 use assert_json_diff::{assert_json_matches_no_panic, CompareMode};

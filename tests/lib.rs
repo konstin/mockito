@@ -133,6 +133,7 @@ fn test_create_starts_the_server() {
 
 #[test]
 fn test_simple_route_mock() {
+    let _ = env_logger::try_init();
     let _m = mock("GET", "/hello").with_body("world").create();
 
     let (status_line, _, body) = request("GET /hello", "");

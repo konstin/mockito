@@ -1,5 +1,5 @@
 use crate::response::{Body, Chunked};
-use crate::{Mock, Request, SERVER_ADDRESS_INTERNAL};
+use crate::{Mock, Request};
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::io;
@@ -89,11 +89,11 @@ impl Server {
                 }
             };
 
-            debug!("Server is listening at {}", addr);
+            debug!("[{:?}] Server is listening", addr);
             for stream in listener.incoming() {
                 if let Ok(stream) = stream {
                     let request = Request::from(&stream);
-                    debug!("Request received: {}", request);
+                    debug!("[{:?}] Request received: {}", addr, request);
                     if request.is_ok() {
                         handle_request(request, stream);
                     } else {
@@ -153,12 +153,11 @@ thread_local!(
 ///
 /// The server will be started if necessary.
 pub fn address() -> SocketAddr {
-    try_start();
-
-    let state = SERVER.lock().map(|state| state.listening_addr);
-    state
-        .expect("state lock")
-        .expect("server should be listening")
+    LOCAL_SERVER.with(|server| {
+        let mut server = server.borrow_mut();
+        server.try_start();
+        server.listening_addr.expect("server should be listening")
+    })
 }
 
 /// A local `http://…` URL of the server.
@@ -168,85 +167,34 @@ pub fn url() -> String {
     format!("http://{}", address())
 }
 
-pub fn try_start() {
-    let mut state = SERVER.lock().unwrap();
+fn handle_request(request: Request, stream: TcpStream) {
+    LOCAL_SERVER.with(|server| {
+        let mut server = server.borrow_mut();
+        debug!("[{:?}] Matching request", server.listening_addr);
 
-    if state.listening_addr.is_some() {
-        return;
-    }
+        let mut matchings_mocks = server
+            .mocks
+            .iter_mut()
+            .filter(|mock| mock == &request)
+            .collect::<Vec<_>>();
 
-    let (tx, rx) = mpsc::channel();
+        let maybe_missing_hits = matchings_mocks.iter_mut().find(|m| m.is_missing_hits());
 
-    thread::spawn(move || {
-        let res = TcpListener::bind(SERVER_ADDRESS_INTERNAL).or_else(|err| {
-            warn!("{}", err);
-            TcpListener::bind("127.0.0.1:0")
-        });
-        let (listener, addr) = match res {
-            Ok(listener) => {
-                let addr = listener.local_addr().unwrap();
-                tx.send(Some(addr)).unwrap();
-                (listener, addr)
-            }
-            Err(err) => {
-                error!("{}", err);
-                tx.send(None).unwrap();
-                return;
-            }
+        let mock = match maybe_missing_hits {
+            Some(m) => Some(m),
+            None => matchings_mocks.last_mut(),
         };
 
-        debug!("Server is listening at {}", addr);
-        for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                let request = Request::from(&stream);
-                debug!("Request received: {}", request);
-                if request.is_ok() {
-                    handle_request(request, stream);
-                } else {
-                    let message = request
-                        .error()
-                        .map_or("Could not parse the request.", |err| err.as_str());
-                    debug!("Could not parse request because: {}", message);
-                    respond_with_error(stream, request.version, message);
-                }
-            } else {
-                debug!("Could not read from stream");
-            }
+        if let Some(mock) = mock {
+            debug!("Mock found");
+            mock.hits += 1;
+            respond_with_mock(stream, request.version, mock, request.is_head());
+        } else {
+            debug!("Mock not found");
+            respond_with_mock_not_found(stream, request.version);
+            server.unmatched_requests.push(request);
         }
     });
-
-    state.listening_addr = rx.recv().ok().and_then(|addr| addr);
-}
-
-fn handle_request(request: Request, stream: TcpStream) {
-    handle_match_mock(request, stream);
-}
-
-fn handle_match_mock(request: Request, stream: TcpStream) {
-    let mut state = SERVER.lock().unwrap();
-
-    let mut matchings_mocks = state
-        .mocks
-        .iter_mut()
-        .filter(|mock| mock == &request)
-        .collect::<Vec<_>>();
-
-    let maybe_missing_hits = matchings_mocks.iter_mut().find(|m| m.is_missing_hits());
-
-    let mock = match maybe_missing_hits {
-        Some(m) => Some(m),
-        None => matchings_mocks.last_mut(),
-    };
-
-    if let Some(mock) = mock {
-        debug!("Mock found");
-        mock.hits += 1;
-        respond_with_mock(stream, request.version, mock, request.is_head());
-    } else {
-        debug!("Mock not found");
-        respond_with_mock_not_found(stream, request.version);
-        state.unmatched_requests.push(request);
-    }
 }
 
 fn respond(
